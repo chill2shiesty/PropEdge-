@@ -7,40 +7,70 @@ from datetime import datetime
 
 # ============================================================
 # PROPEdge
-# NFL PLAYER PROP MARKET SCANNER
+# NFL + MLB PLAYER PROP MARKET SCANNER
 # ============================================================
 
 st.set_page_config(
     page_title="PropEdge",
-    page_icon="🏈",
+    page_icon="📊",
     layout="wide",
 )
 
-st.title("🏈 PropEdge")
-st.subheader("NFL Player Prop Market Scanner")
-
-st.write(
-    "Compare Underdog player-prop lines against "
-    "DraftKings, FanDuel, PrizePicks, and BetMGM."
-)
+st.title("📊 PropEdge")
+st.subheader("Player Prop Market Scanner")
 
 
 # ============================================================
-# SETTINGS
+# SPORT CONFIGURATION
 # ============================================================
 
-SPORT_KEY = "americanfootball_nfl"
+SPORT_CONFIG = {
 
-# IMPORTANT:
-#
-# We intentionally DO NOT send a "bookmakers" filter.
-#
-# ParlayAPI's /props endpoint returns all available books
-# in one call. We want the API to return everything it has,
-# then our code will identify the books we care about.
-#
-# This is important because our previous version returned
-# only Underdog + PrizePicks.
+    "NFL": {
+        "sport_key": "americanfootball_nfl",
+
+        "markets": [
+            "player_pass_yds",
+            "player_pass_tds",
+            "player_pass_completions",
+            "player_rush_yds",
+            "player_rec_yds",
+            "player_receptions",
+            "player_anytime_td",
+            "player_interceptions",
+        ],
+
+        "description": "NFL Player Props",
+    },
+
+    "MLB": {
+        "sport_key": "baseball_mlb",
+
+        "markets": [
+            "player_total_bases",
+            "player_hits",
+            "player_home_runs",
+            "player_rbis",
+            "player_runs",
+            "player_singles",
+            "player_doubles",
+            "player_triples",
+            "player_walks",
+            "player_strikeouts",
+            "player_pitcher_outs",
+            "player_hits_allowed",
+            "player_earned_runs",
+            "player_hits_runs_rbis",
+        ],
+
+        "description": "MLB Player Props",
+    },
+}
+
+
+# ============================================================
+# BOOK CONFIGURATION
+# ============================================================
 
 COMPARISON_BOOKS = {
     "draftkings",
@@ -54,31 +84,44 @@ UNDERDOG_NAMES = {
     "underdogfantasy",
 }
 
-REQUESTED_MARKETS = [
-    "player_pass_yds",
-    "player_pass_tds",
-    "player_pass_completions",
-    "player_rush_yds",
-    "player_rec_yds",
-    "player_receptions",
-    "player_anytime_td",
-    "player_interceptions",
-]
-
 DISPLAY_NAMES = {
     "draftkings": "DraftKings",
     "fanduel": "FanDuel",
     "prizepicks": "PrizePicks",
+    "prizepicks_mobile": "PrizePicks",
     "betmgm": "BetMGM",
     "underdog": "Underdog",
+    "underdogfantasy": "Underdog",
 }
 
-# ParlayAPI's props endpoint can serve the latest row per
-# book from the last 60 minutes.
-#
-# We previously used 900 seconds / 15 minutes, which may
-# unnecessarily eliminate books that haven't updated recently.
+
+# ============================================================
+# API SETTINGS
+# ============================================================
+
 MAX_AGE_SECONDS = 3600
+
+
+# ============================================================
+# SPORT SELECTOR
+# ============================================================
+
+selected_sport = st.selectbox(
+    "Sport",
+    list(SPORT_CONFIG.keys()),
+)
+
+SPORT_KEY = SPORT_CONFIG[
+    selected_sport
+]["sport_key"]
+
+REQUESTED_MARKETS = SPORT_CONFIG[
+    selected_sport
+]["markets"]
+
+st.caption(
+    SPORT_CONFIG[selected_sport]["description"]
+)
 
 
 # ============================================================
@@ -97,19 +140,25 @@ if "last_scan" not in st.session_state:
 if "scan_error" not in st.session_state:
     st.session_state.scan_error = None
 
+if "last_sport" not in st.session_state:
+    st.session_state.last_sport = None
+
 
 # ============================================================
-# API
+# API HELPERS
 # ============================================================
 
 def get_api_key():
 
     if "PARLAY_API_KEY" not in st.secrets:
+
         raise ValueError(
             "PARLAY_API_KEY is missing from Streamlit Secrets."
         )
 
-    return st.secrets["PARLAY_API_KEY"]
+    return st.secrets[
+        "PARLAY_API_KEY"
+    ]
 
 
 def get_headers():
@@ -123,13 +172,13 @@ def get_headers():
 def get_props():
 
     """
-    Retrieve NFL player props.
+    Get all available player props for the selected sport.
 
     IMPORTANT:
-    We do NOT send a bookmakers parameter.
+    We intentionally do NOT send a bookmakers filter.
 
-    This allows ParlayAPI to return all available books.
-    PropEdge then filters the returned data locally.
+    ParlayAPI's /props endpoint returns all available books
+    for the sport in one call.
     """
 
     url = (
@@ -138,7 +187,9 @@ def get_props():
     )
 
     params = {
-        "markets": ",".join(REQUESTED_MARKETS),
+        "markets": ",".join(
+            REQUESTED_MARKETS
+        ),
         "limit": 10000,
         "maxAgeSec": MAX_AGE_SECONDS,
         "dfsOdds": "midpoint",
@@ -157,15 +208,21 @@ def get_props():
 
 
 # ============================================================
-# EXTRACT API LIST
+# API RESPONSE EXTRACTION
 # ============================================================
 
 def extract_prop_list(raw_response):
 
-    if isinstance(raw_response, list):
+    if isinstance(
+        raw_response,
+        list,
+    ):
         return raw_response
 
-    if not isinstance(raw_response, dict):
+    if not isinstance(
+        raw_response,
+        dict,
+    ):
         return []
 
     possible_keys = [
@@ -178,19 +235,48 @@ def extract_prop_list(raw_response):
 
     for key in possible_keys:
 
-        value = raw_response.get(key)
+        value = raw_response.get(
+            key
+        )
 
-        if isinstance(value, list):
+        if isinstance(
+            value,
+            list,
+        ):
             return value
 
     return []
 
 
 # ============================================================
-# NORMALIZE API DATA
+# FLEXIBLE FIELD GETTER
 # ============================================================
 
-def normalize_props(raw_response):
+def first_value(
+    obj,
+    *keys,
+):
+
+    for key in keys:
+
+        value = obj.get(
+            key
+        )
+
+        if value is not None:
+
+            return value
+
+    return None
+
+
+# ============================================================
+# NORMALIZE API RESPONSE
+# ============================================================
+
+def normalize_props(
+    raw_response,
+):
 
     prop_list = extract_prop_list(
         raw_response
@@ -200,44 +286,149 @@ def normalize_props(raw_response):
 
     for prop in prop_list:
 
-        if not isinstance(prop, dict):
+        if not isinstance(
+            prop,
+            dict,
+        ):
             continue
 
+        # ----------------------------------------------------
+        # CURRENT PARLAYAPI FIELD NAMES
+        # ----------------------------------------------------
+
+        player = first_value(
+            prop,
+            "player_name",
+            "player",
+        )
+
+        market = first_value(
+            prop,
+            "market_label",
+            "market",
+        )
+
+        market_key = first_value(
+            prop,
+            "market_key",
+        )
+
+        book = first_value(
+            prop,
+            "source",
+            "bookmaker",
+            "book",
+        )
+
+        book_title = first_value(
+            prop,
+            "source_title",
+            "bookmaker_title",
+        )
+
+        line = first_value(
+            prop,
+            "line",
+        )
+
+        over_price = first_value(
+            prop,
+            "over_price",
+        )
+
+        under_price = first_value(
+            prop,
+            "under_price",
+        )
+
+        home_team = first_value(
+            prop,
+            "home_team",
+        )
+
+        away_team = first_value(
+            prop,
+            "away_team",
+        )
+
+        game_time = first_value(
+            prop,
+            "commence_time",
+        )
+
+        age_seconds = first_value(
+            prop,
+            "age_seconds",
+        )
+
+        event_id = first_value(
+            prop,
+            "canonical_event_id",
+            "event_id",
+        )
+
         rows.append({
-            "Player": prop.get("player"),
-            "Market": prop.get("market"),
-            "Market Key": prop.get("market_key"),
-            "Book": prop.get("bookmaker"),
-            "Book Title": prop.get("bookmaker_title"),
-            "Line": prop.get("line"),
-            "Over Odds": prop.get("over_price"),
-            "Under Odds": prop.get("under_price"),
-            "Home Team": prop.get("home_team"),
-            "Away Team": prop.get("away_team"),
-            "Game Time": prop.get("commence_time"),
-            "Age Seconds": prop.get("age_seconds"),
-            "Event ID": prop.get("canonical_event_id"),
+
+            "Player": player,
+
+            "Market": market,
+
+            "Market Key": market_key,
+
+            "Book": book,
+
+            "Book Title": book_title,
+
+            "Line": line,
+
+            "Over Odds": over_price,
+
+            "Under Odds": under_price,
+
+            "Home Team": home_team,
+
+            "Away Team": away_team,
+
+            "Game Time": game_time,
+
+            "Age Seconds": age_seconds,
+
+            "Event ID": event_id,
         })
 
-    return pd.DataFrame(rows)
+    return pd.DataFrame(
+        rows
+    )
 
 
 # ============================================================
-# CLEAN BOOK
+# CLEAN BOOK NAME
 # ============================================================
 
-def clean_book_name(book):
+def clean_book_name(
+    book,
+):
 
     if pd.isna(book):
+
         return ""
 
     return (
         str(book)
         .strip()
         .lower()
-        .replace(" ", "")
-        .replace("-", "")
-        .replace("_", "")
+        .replace(
+            " ",
+            "",
+        )
+        .replace(
+            "-",
+            "",
+        )
+        .replace(
+            "_",
+            "",
+        )
     )
 
 
@@ -245,9 +436,12 @@ def clean_book_name(book):
 # CLEAN PLAYER
 # ============================================================
 
-def clean_player_name(player):
+def clean_player_name(
+    player,
+):
 
     if pd.isna(player):
+
         return ""
 
     return re.sub(
@@ -263,9 +457,12 @@ def clean_player_name(player):
 # CLEAN MARKET
 # ============================================================
 
-def clean_market_name(market):
+def clean_market_name(
+    market,
+):
 
     if pd.isna(market):
+
         return ""
 
     return (
@@ -275,9 +472,12 @@ def clean_market_name(market):
     )
 
 
-def clean_market_key(market_key):
+def clean_market_key(
+    market_key,
+):
 
     if pd.isna(market_key):
+
         return ""
 
     return (
@@ -291,9 +491,12 @@ def clean_market_key(market_key):
 # CLEAN TEAM
 # ============================================================
 
-def clean_team_name(team):
+def clean_team_name(
+    team,
+):
 
     if pd.isna(team):
+
         return ""
 
     return re.sub(
@@ -306,7 +509,7 @@ def clean_team_name(team):
 
 
 # ============================================================
-# DETECT PROP PERIOD
+# PERIOD
 # ============================================================
 
 def detect_period(
@@ -314,9 +517,16 @@ def detect_period(
     market_key,
 ):
 
+    # MLB props are generally full-game props.
+    # NFL can contain quarter/half markets.
+
     text = " ".join([
-        clean_market_name(market),
-        clean_market_key(market_key),
+        clean_market_name(
+            market
+        ),
+        clean_market_key(
+            market_key
+        ),
     ])
 
     if re.search(
@@ -355,14 +565,6 @@ def detect_period(
     ):
         return "2H"
 
-    if re.search(
-        r"\bgame\b|full game|full-game",
-        text,
-    ):
-        return "GAME"
-
-    # Normal NFL player props are full-game unless
-    # their market name explicitly indicates another period.
     return "GAME"
 
 
@@ -376,44 +578,57 @@ def same_game(
 ):
 
     underdog_event = str(
-        underdog.get("Event ID", "")
+        underdog.get(
+            "Event ID",
+            "",
+        )
         or ""
     ).strip()
 
     comparison_event = str(
-        comparison.get("Event ID", "")
+        comparison.get(
+            "Event ID",
+            "",
+        )
         or ""
     ).strip()
 
-    # First choice:
-    # If both sources have the same canonical event ID,
-    # this is a definite match.
+    # Best-case match.
     if (
         underdog_event
         and comparison_event
-        and underdog_event == comparison_event
+        and underdog_event
+        == comparison_event
     ):
+
         return True
 
-    # Do NOT require Event ID equality.
-    #
-    # Different providers can represent the same game
-    # differently. Fall back to normalized teams.
+    # --------------------------------------------------------
+    # FALLBACK TO TEAMS
+    # --------------------------------------------------------
 
     underdog_home = clean_team_name(
-        underdog.get("Home Team")
+        underdog.get(
+            "Home Team"
+        )
     )
 
     underdog_away = clean_team_name(
-        underdog.get("Away Team")
+        underdog.get(
+            "Away Team"
+        )
     )
 
     comparison_home = clean_team_name(
-        comparison.get("Home Team")
+        comparison.get(
+            "Home Team"
+        )
     )
 
     comparison_away = clean_team_name(
-        comparison.get("Away Team")
+        comparison.get(
+            "Away Team"
+        )
     )
 
     underdog_teams = {
@@ -429,8 +644,10 @@ def same_game(
     if (
         underdog_teams
         and comparison_teams
-        and underdog_teams == comparison_teams
+        and underdog_teams
+        == comparison_teams
     ):
+
         return True
 
     return False
@@ -450,38 +667,61 @@ def same_prop(
     # --------------------------------------------------------
 
     if clean_player_name(
-        underdog.get("Player")
+        underdog.get(
+            "Player"
+        )
     ) != clean_player_name(
-        comparison.get("Player")
+        comparison.get(
+            "Player"
+        )
     ):
+
         return False
 
     # --------------------------------------------------------
-    # MARKET
+    # MARKET KEY
     # --------------------------------------------------------
 
     underdog_market = clean_market_key(
-        underdog.get("Market Key")
+        underdog.get(
+            "Market Key"
+        )
     )
 
     comparison_market = clean_market_key(
-        comparison.get("Market Key")
+        comparison.get(
+            "Market Key"
+        )
     )
 
-    # Fall back to display market if market key is missing.
+    # If market keys are unavailable,
+    # fall back to market labels.
+
     if not underdog_market:
 
-        underdog_market = clean_market_name(
-            underdog.get("Market")
+        underdog_market = (
+            clean_market_name(
+                underdog.get(
+                    "Market"
+                )
+            )
         )
 
     if not comparison_market:
 
-        comparison_market = clean_market_name(
-            comparison.get("Market")
+        comparison_market = (
+            clean_market_name(
+                comparison.get(
+                    "Market"
+                )
+            )
         )
 
-    if underdog_market != comparison_market:
+    if (
+        underdog_market
+        != comparison_market
+    ):
+
         return False
 
     # --------------------------------------------------------
@@ -489,16 +729,28 @@ def same_prop(
     # --------------------------------------------------------
 
     underdog_period = detect_period(
-        underdog.get("Market"),
-        underdog.get("Market Key"),
+        underdog.get(
+            "Market"
+        ),
+        underdog.get(
+            "Market Key"
+        ),
     )
 
     comparison_period = detect_period(
-        comparison.get("Market"),
-        comparison.get("Market Key"),
+        comparison.get(
+            "Market"
+        ),
+        comparison.get(
+            "Market Key"
+        ),
     )
 
-    if underdog_period != comparison_period:
+    if (
+        underdog_period
+        != comparison_period
+    ):
+
         return False
 
     # --------------------------------------------------------
@@ -509,6 +761,7 @@ def same_prop(
         underdog,
         comparison,
     ):
+
         return False
 
     return True
@@ -518,21 +771,45 @@ def same_prop(
 # BUILD COMPARISON
 # ============================================================
 
-def build_market_comparison(df):
+def build_market_comparison(
+    df,
+):
 
     if df.empty:
+
         return pd.DataFrame()
 
     working = df.copy()
 
     # --------------------------------------------------------
-    # NORMALIZE
+    # CLEAN BOOK
     # --------------------------------------------------------
 
     working["Book Clean"] = (
-        working["Book"]
-        .apply(clean_book_name)
+        working[
+            "Book"
+        ].apply(
+            clean_book_name
+        )
     )
+
+    # Normalize PrizePicks Mobile.
+    working.loc[
+        working["Book Clean"]
+        == "prizepicksmobile",
+        "Book Clean",
+    ] = "prizepicks"
+
+    # Normalize Underdog.
+    working.loc[
+        working["Book Clean"]
+        == "underdogfantasy",
+        "Book Clean",
+    ] = "underdog"
+
+    # --------------------------------------------------------
+    # LINE
+    # --------------------------------------------------------
 
     working["Line"] = pd.to_numeric(
         working["Line"],
@@ -553,8 +830,12 @@ def build_market_comparison(df):
     # --------------------------------------------------------
 
     underdog_df = working[
-        working["Book Clean"].isin(
-            UNDERDOG_NAMES
+        working[
+            "Book Clean"
+        ].isin(
+            {
+                "underdog"
+            }
         )
     ].copy()
 
@@ -563,46 +844,47 @@ def build_market_comparison(df):
     # --------------------------------------------------------
 
     comparison_df = working[
-        working["Book Clean"].isin(
+        working[
+            "Book Clean"
+        ].isin(
             COMPARISON_BOOKS
         )
     ].copy()
 
     if underdog_df.empty:
+
         return pd.DataFrame()
 
     if comparison_df.empty:
+
         return pd.DataFrame()
 
     results = []
 
     # ========================================================
-    # PROCESS EACH UNDERDOG PROP
+    # EACH UNDERDOG PROP
     # ========================================================
 
-    for _, underdog in underdog_df.iterrows():
-
-        # ----------------------------------------------------
-        # FIND MATCHES
-        # ----------------------------------------------------
+    for _, underdog in (
+        underdog_df.iterrows()
+    ):
 
         matches = comparison_df[
             comparison_df.apply(
-                lambda row: same_prop(
-                    underdog,
-                    row,
-                ),
+                lambda row:
+                    same_prop(
+                        underdog,
+                        row,
+                    ),
                 axis=1,
             )
         ].copy()
 
         if matches.empty:
+
             continue
 
-        # ----------------------------------------------------
-        # FRESHEST ROW PER BOOK
-        # ----------------------------------------------------
-
+        # Keep freshest row for each book.
         matches = (
             matches
             .sort_values(
@@ -617,49 +899,49 @@ def build_market_comparison(df):
             )
         )
 
-        # ----------------------------------------------------
-        # BASE RESULT
-        # ----------------------------------------------------
-
         result = {
 
-            "Player": underdog["Player"],
+            "Player": underdog[
+                "Player"
+            ],
 
-            "Prop": (
-                underdog["Market"]
-                if pd.notna(
-                    underdog["Market"]
-                )
-                else underdog["Market Key"]
-            ),
+            "Prop": underdog[
+                "Market"
+            ],
 
-            "Market Key": (
-                underdog["Market Key"]
-            ),
+            "Market Key": underdog[
+                "Market Key"
+            ],
 
             "Period": detect_period(
-                underdog["Market"],
-                underdog["Market Key"],
+                underdog[
+                    "Market"
+                ],
+                underdog[
+                    "Market Key"
+                ],
             ),
 
-            "Home Team": (
-                underdog["Home Team"]
-            ),
+            "Home Team": underdog[
+                "Home Team"
+            ],
 
-            "Away Team": (
-                underdog["Away Team"]
-            ),
+            "Away Team": underdog[
+                "Away Team"
+            ],
 
-            "Game Time": (
-                underdog["Game Time"]
-            ),
+            "Game Time": underdog[
+                "Game Time"
+            ],
 
-            "Event ID": (
-                underdog["Event ID"]
-            ),
+            "Event ID": underdog[
+                "Event ID"
+            ],
 
             "Underdog": float(
-                underdog["Line"]
+                underdog[
+                    "Line"
+                ]
             ),
 
             "DraftKings": None,
@@ -674,154 +956,238 @@ def build_market_comparison(df):
         }
 
         # ----------------------------------------------------
-        # INSERT BOOK LINES
+        # BOOK LINES
         # ----------------------------------------------------
 
-        for _, match in matches.iterrows():
+        for _, match in (
+            matches.iterrows()
+        ):
 
             book = clean_book_name(
-                match["Book"]
+                match[
+                    "Book"
+                ]
             )
+
+            if book == "prizepicksmobile":
+
+                book = "prizepicks"
+
+            if book == "underdogfantasy":
+
+                book = "underdog"
 
             if book == "draftkings":
 
-                result["DraftKings"] = float(
-                    match["Line"]
+                result[
+                    "DraftKings"
+                ] = float(
+                    match[
+                        "Line"
+                    ]
                 )
 
             elif book == "fanduel":
 
-                result["FanDuel"] = float(
-                    match["Line"]
+                result[
+                    "FanDuel"
+                ] = float(
+                    match[
+                        "Line"
+                    ]
                 )
 
             elif book == "prizepicks":
 
-                result["PrizePicks"] = float(
-                    match["Line"]
+                result[
+                    "PrizePicks"
+                ] = float(
+                    match[
+                        "Line"
+                    ]
                 )
 
             elif book == "betmgm":
 
-                result["BetMGM"] = float(
-                    match["Line"]
+                result[
+                    "BetMGM"
+                ] = float(
+                    match[
+                        "Line"
+                    ]
                 )
 
         # ----------------------------------------------------
         # CONSENSUS
         # ----------------------------------------------------
 
-        book_values = [
-            result["DraftKings"],
-            result["FanDuel"],
-            result["PrizePicks"],
-            result["BetMGM"],
+        values = [
+            result[
+                "DraftKings"
+            ],
+            result[
+                "FanDuel"
+            ],
+            result[
+                "PrizePicks"
+            ],
+            result[
+                "BetMGM"
+            ],
         ]
 
         valid_values = [
             value
-            for value in book_values
+            for value in values
             if value is not None
             and pd.notna(value)
         ]
 
         if not valid_values:
+
             continue
 
-        result["Books"] = len(
+        result[
+            "Books"
+        ] = len(
             valid_values
         )
 
-        result["Market Consensus"] = (
-            sum(valid_values)
-            / len(valid_values)
+        result[
+            "Market Consensus"
+        ] = (
+            sum(
+                valid_values
+            )
+            / len(
+                valid_values
+            )
         )
 
         # ----------------------------------------------------
         # DIFFERENCE
         # ----------------------------------------------------
 
-        result["Difference"] = (
-            result["Market Consensus"]
-            - result["Underdog"]
+        result[
+            "Difference"
+        ] = (
+            result[
+                "Market Consensus"
+            ]
+            - result[
+                "Underdog"
+            ]
         )
 
         # ----------------------------------------------------
-        # SAFE PERCENTAGE
+        # SAFE DISCREPANCY %
         # ----------------------------------------------------
-        #
-        # DO NOT do:
-        #
-        # difference / underdog * 100
-        #
-        # because:
-        #
-        # 5.5 - 0.5 = 5
-        # 5 / 0.5 = 1000%
-        #
-        # That creates a technically correct but misleading
-        # percentage.
-        #
-        # Instead use the midpoint of the two lines.
 
         denominator = (
-            abs(result["Market Consensus"])
-            + abs(result["Underdog"])
+            abs(
+                result[
+                    "Market Consensus"
+                ]
+            )
+            +
+            abs(
+                result[
+                    "Underdog"
+                ]
+            )
         ) / 2
 
         if denominator > 0:
 
-            result["Line Diff %"] = (
-                abs(result["Difference"])
+            result[
+                "Line Diff %"
+            ] = (
+                abs(
+                    result[
+                        "Difference"
+                    ]
+                )
                 / denominator
             ) * 100
 
         else:
 
-            result["Line Diff %"] = 0.0
+            result[
+                "Line Diff %"
+            ] = 0.0
 
         # ----------------------------------------------------
         # PICK
         # ----------------------------------------------------
 
-        if result["Difference"] > 0:
+        if (
+            result[
+                "Difference"
+            ] > 0
+        ):
 
-            result["Pick"] = "HIGHER"
+            result[
+                "Pick"
+            ] = "HIGHER"
 
-        elif result["Difference"] < 0:
+        elif (
+            result[
+                "Difference"
+            ] < 0
+        ):
 
-            result["Pick"] = "LOWER"
+            result[
+                "Pick"
+            ] = "LOWER"
 
         else:
 
-            result["Pick"] = "NEUTRAL"
+            result[
+                "Pick"
+            ] = "NEUTRAL"
 
-        results.append(result)
+        results.append(
+            result
+        )
 
     if not results:
+
         return pd.DataFrame()
 
-    return pd.DataFrame(results)
+    return pd.DataFrame(
+        results
+    )
 
 
 # ============================================================
 # BOOK STATUS
 # ============================================================
 
-def build_book_status(props_df):
+def build_book_status(
+    props_df,
+):
 
     if props_df.empty:
 
-        actual_books = set()
+        return pd.DataFrame()
 
-    else:
-
-        actual_books = {
-            clean_book_name(book)
-            for book in props_df["Book"]
-            .dropna()
-            .tolist()
-        }
+    normalized_books = (
+        props_df[
+            "Book"
+        ]
+        .fillna("")
+        .apply(
+            clean_book_name
+        )
+        .replace(
+            {
+                "prizepicksmobile":
+                    "prizepicks",
+                "underdogfantasy":
+                    "underdog",
+            }
+        )
+    )
 
     rows = []
 
@@ -833,35 +1199,35 @@ def build_book_status(props_df):
         "underdog",
     ]:
 
-        if props_df.empty:
-
-            records = 0
-
-        else:
-
-            records = int(
-                (
-                    props_df["Book"]
-                    .apply(clean_book_name)
-                    == book
-                ).sum()
-            )
+        count = int(
+            (
+                normalized_books
+                == book
+            ).sum()
+        )
 
         rows.append({
-            "Book": DISPLAY_NAMES[book],
 
-            "Requested": "YES",
+            "Book":
+                DISPLAY_NAMES[
+                    book
+                ],
 
-            "Returned": (
+            "Requested":
+                "YES",
+
+            "Returned":
                 "YES"
-                if book in actual_books
-                else "NO"
-            ),
+                if count > 0
+                else "NO",
 
-            "Records": records,
+            "Records":
+                count,
         })
 
-    return pd.DataFrame(rows)
+    return pd.DataFrame(
+        rows
+    )
 
 
 # ============================================================
@@ -907,7 +1273,8 @@ if scan_button:
     try:
 
         with st.spinner(
-            "Getting current NFL player props..."
+            f"Getting current {selected_sport} "
+            "player props..."
         ):
 
             raw_response = get_props()
@@ -928,6 +1295,10 @@ if scan_button:
 
             st.session_state.scan_results = (
                 comparison_df
+            )
+
+            st.session_state.last_sport = (
+                selected_sport
             )
 
             st.session_state.last_scan = (
@@ -965,7 +1336,7 @@ if st.session_state.scan_error:
 
 
 # ============================================================
-# RESULTS
+# NO SCAN
 # ============================================================
 
 comparison_df = (
@@ -975,15 +1346,15 @@ comparison_df = (
 if comparison_df is None:
 
     st.info(
-        "Click **SCAN NOW** to retrieve "
-        "the latest NFL player props."
+        "Select a sport and click "
+        "**SCAN NOW**."
     )
 
     st.stop()
 
 
 # ============================================================
-# NORMALIZE RAW DATA
+# RAW DATA
 # ============================================================
 
 props_df = normalize_props(
@@ -1021,17 +1392,15 @@ with c2:
 
 with c3:
 
-    if not props_df.empty:
-
-        unique_players = (
-            props_df["Player"]
-            .dropna()
-            .nunique()
-        )
-
-    else:
-
-        unique_players = 0
+    unique_players = (
+        props_df[
+            "Player"
+        ]
+        .dropna()
+        .nunique()
+        if not props_df.empty
+        else 0
+    )
 
     st.metric(
         "Players",
@@ -1040,17 +1409,15 @@ with c3:
 
 with c4:
 
-    if not props_df.empty:
-
-        unique_books = (
-            props_df["Book"]
-            .dropna()
-            .nunique()
-        )
-
-    else:
-
-        unique_books = 0
+    unique_books = (
+        props_df[
+            "Book"
+        ]
+        .dropna()
+        .nunique()
+        if not props_df.empty
+        else 0
+    )
 
     st.metric(
         "Books Found",
@@ -1059,7 +1426,7 @@ with c4:
 
 
 # ============================================================
-# SPORTSBOOKS FOUND
+# SOURCES
 # ============================================================
 
 if not props_df.empty:
@@ -1068,14 +1435,16 @@ if not props_df.empty:
         "Sportsbooks / Sources Found"
     )
 
-    book_counts = (
-        props_df["Book"]
+    source_counts = (
+        props_df[
+            "Book"
+        ]
         .fillna("Unknown")
         .value_counts()
     )
 
     st.dataframe(
-        book_counts.rename(
+        source_counts.rename(
             "Records"
         ),
         use_container_width=True,
@@ -1110,9 +1479,9 @@ if comparison_df.empty:
     )
 
     st.write(
-        "The API returned data, but PropEdge "
-        "could not find a prop with the same "
-        "player, market key, period, and game."
+        f"PropEdge received {len(props_df)} "
+        f"{selected_sport} records, but could not "
+        "find matching player props."
     )
 
     if not props_df.empty:
@@ -1122,7 +1491,9 @@ if comparison_df.empty:
         )
 
         st.write(
-            props_df["Book"]
+            props_df[
+                "Book"
+            ]
             .dropna()
             .unique()
             .tolist()
@@ -1133,7 +1504,9 @@ if comparison_df.empty:
         )
 
         st.write(
-            props_df["Market"]
+            props_df[
+                "Market"
+            ]
             .dropna()
             .unique()
             .tolist()
@@ -1144,7 +1517,9 @@ if comparison_df.empty:
         )
 
         st.write(
-            props_df["Market Key"]
+            props_df[
+                "Market Key"
+            ]
             .dropna()
             .unique()
             .tolist()
@@ -1165,15 +1540,19 @@ if comparison_df.empty:
             ]
         ].copy()
 
-        debug_df["Period"] = (
-            debug_df.apply(
-                lambda row:
-                    detect_period(
-                        row["Market"],
-                        row["Market Key"],
-                    ),
-                axis=1,
-            )
+        debug_df[
+            "Period"
+        ] = debug_df.apply(
+            lambda row:
+                detect_period(
+                    row[
+                        "Market"
+                    ],
+                    row[
+                        "Market Key"
+                    ],
+                ),
+            axis=1,
         )
 
         st.subheader(
@@ -1181,7 +1560,9 @@ if comparison_df.empty:
         )
 
         st.dataframe(
-            debug_df.head(100),
+            debug_df.head(
+                100
+            ),
             use_container_width=True,
             hide_index=True,
         )
@@ -1197,21 +1578,20 @@ if comparison_df.empty:
 
 
 # ============================================================
-# RANK PROPS
+# RANK
 # ============================================================
 
 comparison_df = (
     comparison_df.copy()
 )
 
-comparison_df["Abs Difference"] = (
-    comparison_df["Difference"]
-    .abs()
+comparison_df[
+    "Abs Difference"
+] = (
+    comparison_df[
+        "Difference"
+    ].abs()
 )
-
-# Props with more comparison books get priority.
-# Within the same book count, largest line differences
-# appear first.
 
 comparison_df = (
     comparison_df
@@ -1230,8 +1610,11 @@ comparison_df = (
     )
 )
 
-comparison_df["Rank"] = (
-    comparison_df.index + 1
+comparison_df[
+    "Rank"
+] = (
+    comparison_df.index
+    + 1
 )
 
 
@@ -1263,21 +1646,28 @@ with c2:
 
 with c3:
 
-    if not props_df.empty:
+    normalized_books = (
+        props_df[
+            "Book"
+        ]
+        .fillna("")
+        .apply(
+            clean_book_name
+        )
+        .replace(
+            {
+                "prizepicksmobile":
+                    "prizepicks",
+                "underdogfantasy":
+                    "underdog",
+            }
+        )
+    )
 
-        actual_books = {
-            clean_book_name(book)
-            for book in props_df["Book"]
-            .dropna()
-            .tolist()
-        }
-
-    else:
-
-        actual_books = set()
-
-    available_comparison_books = (
-        actual_books
+    comparison_book_count = len(
+        set(
+            normalized_books
+        )
         .intersection(
             COMPARISON_BOOKS
         )
@@ -1285,8 +1675,7 @@ with c3:
 
     st.metric(
         "Comparison Books",
-        f"{len(available_comparison_books)} / "
-        f"{len(COMPARISON_BOOKS)}",
+        f"{comparison_book_count} / 4",
     )
 
 
@@ -1318,9 +1707,9 @@ display_df = (
 )
 
 
-# ------------------------------------------------------------
-# ROUND LINES
-# ------------------------------------------------------------
+# ============================================================
+# ROUND NUMBERS
+# ============================================================
 
 for column in [
     "Underdog",
@@ -1332,27 +1721,35 @@ for column in [
     "Difference",
 ]:
 
-    display_df[column] = (
+    display_df[
+        column
+    ] = (
         pd.to_numeric(
-            display_df[column],
+            display_df[
+                column
+            ],
             errors="coerce",
         )
         .round(1)
     )
 
 
-# ------------------------------------------------------------
-# ROUND PERCENTAGE
-# ------------------------------------------------------------
-
-display_df["Line Diff %"] = (
+display_df[
+    "Line Diff %"
+] = (
     pd.to_numeric(
-        display_df["Line Diff %"],
+        display_df[
+            "Line Diff %"
+        ],
         errors="coerce",
     )
     .round(2)
 )
 
+
+# ============================================================
+# DISPLAY
+# ============================================================
 
 st.dataframe(
     display_df,
@@ -1362,25 +1759,39 @@ st.dataframe(
 
 
 # ============================================================
-# COMPARISON EXPLANATION
+# EXPLANATION
 # ============================================================
 
 st.subheader(
-    "📖 How Each Prop Was Compared"
+    "📖 How PropEdge Compares Props"
 )
 
+if selected_sport == "MLB":
+
+    st.write(
+        "For MLB, PropEdge matches an Underdog prop "
+        "to the same player, MLB market, and game "
+        "across DraftKings, FanDuel, PrizePicks, "
+        "and BetMGM."
+    )
+
+else:
+
+    st.write(
+        "For NFL, PropEdge matches an Underdog prop "
+        "to the same player, market, period, and game "
+        "across DraftKings, FanDuel, PrizePicks, "
+        "and BetMGM."
+    )
+
 st.write(
-    "Each row starts with an Underdog line. "
-    "PropEdge then looks for the same player, "
-    "market, betting period, and game at DraftKings, "
-    "FanDuel, PrizePicks, and BetMGM. "
-    "Only books that actually returned a matching line "
+    "Only books that actually return a matching line "
     "are included in the Market Consensus."
 )
 
 
 # ============================================================
-# BOOK-BY-BOOK VIEW
+# BOOK-BY-BOOK TABLE
 # ============================================================
 
 st.subheader(
@@ -1411,9 +1822,13 @@ for column in [
     "Market Consensus",
 ]:
 
-    book_comparison_df[column] = (
+    book_comparison_df[
+        column
+    ] = (
         pd.to_numeric(
-            book_comparison_df[column],
+            book_comparison_df[
+                column
+            ],
             errors="coerce",
         )
         .round(1)
@@ -1440,12 +1855,20 @@ chart_df = (
     .copy()
 )
 
-chart_df["Label"] = (
-    chart_df["Player"].astype(str)
+chart_df[
+    "Label"
+] = (
+    chart_df[
+        "Player"
+    ].astype(str)
     + " — "
-    + chart_df["Prop"].astype(str)
+    + chart_df[
+        "Prop"
+    ].astype(str)
     + " — "
-    + chart_df["Pick"].astype(str)
+    + chart_df[
+        "Pick"
+    ].astype(str)
 )
 
 chart_df = (
@@ -1455,7 +1878,9 @@ chart_df = (
 )
 
 st.bar_chart(
-    chart_df["Line Diff %"]
+    chart_df[
+        "Line Diff %"
+    ]
 )
 
 
@@ -1468,9 +1893,9 @@ with st.expander(
 ):
 
     st.write(
-        "This section shows the exact records "
-        "returned by ParlayAPI before PropEdge "
-        "matches them."
+        "This shows the normalized records returned "
+        "by ParlayAPI before PropEdge performs its "
+        "matching logic."
     )
 
     if not props_df.empty:
