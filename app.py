@@ -79,11 +79,6 @@ COMPARISON_BOOKS = {
     "betmgm",
 }
 
-UNDERDOG_NAMES = {
-    "underdog",
-    "underdogfantasy",
-}
-
 DISPLAY_NAMES = {
     "draftkings": "DraftKings",
     "fanduel": "FanDuel",
@@ -100,6 +95,25 @@ DISPLAY_NAMES = {
 # ============================================================
 
 MAX_AGE_SECONDS = 3600
+
+
+# ============================================================
+# RANKING SETTINGS
+# ============================================================
+
+# These weights control the Final Score.
+#
+# No-Vig Probability is the most important factor.
+# Line Edge is the second factor.
+# Book Confirmation rewards edges that appear across
+# multiple sportsbooks.
+#
+# The MAIN CHART is NOT ranked by this score.
+# The main chart is always ranked by Average No-Vig Probability.
+
+NO_VIG_WEIGHT = 0.70
+LINE_EDGE_WEIGHT = 0.20
+BOOK_CONFIRMATION_WEIGHT = 0.10
 
 
 # ============================================================
@@ -174,11 +188,10 @@ def get_props():
     """
     Get all available player props for the selected sport.
 
-    IMPORTANT:
     We intentionally do NOT send a bookmakers filter.
 
-    ParlayAPI's /props endpoint returns all available books
-    for the sport in one call.
+    ParlayAPI's /props endpoint returns all available
+    books for the sport in one call.
     """
 
     url = (
@@ -292,10 +305,6 @@ def normalize_props(
         ):
             continue
 
-        # ----------------------------------------------------
-        # CURRENT PARLAYAPI FIELD NAMES
-        # ----------------------------------------------------
-
         player = first_value(
             prop,
             "player_name",
@@ -334,11 +343,15 @@ def normalize_props(
         over_price = first_value(
             prop,
             "over_price",
+            "over_odds",
+            "over",
         )
 
         under_price = first_value(
             prop,
             "under_price",
+            "under_odds",
+            "under",
         )
 
         home_team = first_value(
@@ -517,9 +530,6 @@ def detect_period(
     market_key,
 ):
 
-    # MLB props are generally full-game props.
-    # NFL can contain quarter/half markets.
-
     text = " ".join([
         clean_market_name(
             market
@@ -593,7 +603,6 @@ def same_game(
         or ""
     ).strip()
 
-    # Best-case match.
     if (
         underdog_event
         and comparison_event
@@ -602,10 +611,6 @@ def same_game(
     ):
 
         return True
-
-    # --------------------------------------------------------
-    # FALLBACK TO TEAMS
-    # --------------------------------------------------------
 
     underdog_home = clean_team_name(
         underdog.get(
@@ -662,10 +667,6 @@ def same_prop(
     comparison,
 ):
 
-    # --------------------------------------------------------
-    # PLAYER
-    # --------------------------------------------------------
-
     if clean_player_name(
         underdog.get(
             "Player"
@@ -678,10 +679,6 @@ def same_prop(
 
         return False
 
-    # --------------------------------------------------------
-    # MARKET KEY
-    # --------------------------------------------------------
-
     underdog_market = clean_market_key(
         underdog.get(
             "Market Key"
@@ -693,9 +690,6 @@ def same_prop(
             "Market Key"
         )
     )
-
-    # If market keys are unavailable,
-    # fall back to market labels.
 
     if not underdog_market:
 
@@ -724,10 +718,6 @@ def same_prop(
 
         return False
 
-    # --------------------------------------------------------
-    # PERIOD
-    # --------------------------------------------------------
-
     underdog_period = detect_period(
         underdog.get(
             "Market"
@@ -753,10 +743,6 @@ def same_prop(
 
         return False
 
-    # --------------------------------------------------------
-    # GAME
-    # --------------------------------------------------------
-
     if not same_game(
         underdog,
         comparison,
@@ -765,6 +751,178 @@ def same_prop(
         return False
 
     return True
+
+
+# ============================================================
+# AMERICAN ODDS -> IMPLIED PROBABILITY
+# ============================================================
+
+def american_to_implied_probability(
+    odds,
+):
+
+    try:
+
+        odds = float(
+            odds
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+
+        return None
+
+    if odds == 0:
+
+        return None
+
+    if odds > 0:
+
+        return (
+            100
+            / (
+                odds
+                + 100
+            )
+        )
+
+    return (
+        abs(odds)
+        / (
+            abs(odds)
+            + 100
+        )
+    )
+
+
+# ============================================================
+# NO-VIG PROBABILITY
+# ============================================================
+
+def calculate_no_vig_probability(
+    over_odds,
+    under_odds,
+):
+
+    over_implied = (
+        american_to_implied_probability(
+            over_odds
+        )
+    )
+
+    under_implied = (
+        american_to_implied_probability(
+            under_odds
+        )
+    )
+
+    if (
+        over_implied is None
+        or under_implied is None
+    ):
+
+        return None, None
+
+    total = (
+        over_implied
+        + under_implied
+    )
+
+    if total <= 0:
+
+        return None, None
+
+    over_no_vig = (
+        over_implied
+        / total
+    )
+
+    under_no_vig = (
+        under_implied
+        / total
+    )
+
+    return (
+        over_no_vig,
+        under_no_vig,
+    )
+
+
+# ============================================================
+# PROBABILITY -> AMERICAN ODDS
+# ============================================================
+
+def probability_to_american_odds(
+    probability,
+):
+
+    try:
+
+        probability = float(
+            probability
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+
+        return None
+
+    if (
+        probability <= 0
+        or probability >= 1
+    ):
+
+        return None
+
+    if probability >= 0.5:
+
+        return -(
+            probability
+            / (
+                1
+                - probability
+            )
+        ) * 100
+
+    return (
+        (
+            1
+            - probability
+        )
+        / probability
+    ) * 100
+
+
+# ============================================================
+# SELECTED-SIDE NO-VIG PROBABILITY
+# ============================================================
+
+def selected_side_no_vig_probability(
+    pick,
+    over_odds,
+    under_odds,
+):
+
+    over_no_vig, under_no_vig = (
+        calculate_no_vig_probability(
+            over_odds,
+            under_odds,
+        )
+    )
+
+    if pick == "HIGHER":
+
+        return over_no_vig
+
+    if pick == "LOWER":
+
+        return under_no_vig
+
+    return None
 
 
 # ============================================================
@@ -793,14 +951,12 @@ def build_market_comparison(
         )
     )
 
-    # Normalize PrizePicks Mobile.
     working.loc[
         working["Book Clean"]
         == "prizepicksmobile",
         "Book Clean",
     ] = "prizepicks"
 
-    # Normalize Underdog.
     working.loc[
         working["Book Clean"]
         == "underdogfantasy",
@@ -813,6 +969,16 @@ def build_market_comparison(
 
     working["Line"] = pd.to_numeric(
         working["Line"],
+        errors="coerce",
+    )
+
+    working["Over Odds"] = pd.to_numeric(
+        working["Over Odds"],
+        errors="coerce",
+    )
+
+    working["Under Odds"] = pd.to_numeric(
+        working["Under Odds"],
         errors="coerce",
     )
 
@@ -945,18 +1111,27 @@ def build_market_comparison(
             ),
 
             "DraftKings": None,
-
             "FanDuel": None,
-
             "PrizePicks": None,
-
             "BetMGM": None,
+
+            "DraftKings Over Odds": None,
+            "DraftKings Under Odds": None,
+
+            "FanDuel Over Odds": None,
+            "FanDuel Under Odds": None,
+
+            "PrizePicks Over Odds": None,
+            "PrizePicks Under Odds": None,
+
+            "BetMGM Over Odds": None,
+            "BetMGM Under Odds": None,
 
             "Books": 0,
         }
 
         # ----------------------------------------------------
-        # BOOK LINES
+        # BOOK LINES + ODDS
         # ----------------------------------------------------
 
         for _, match in (
@@ -977,48 +1152,93 @@ def build_market_comparison(
 
                 book = "underdog"
 
+            line = pd.to_numeric(
+                match[
+                    "Line"
+                ],
+                errors="coerce",
+            )
+
+            over_odds = pd.to_numeric(
+                match[
+                    "Over Odds"
+                ],
+                errors="coerce",
+            )
+
+            under_odds = pd.to_numeric(
+                match[
+                    "Under Odds"
+                ],
+                errors="coerce",
+            )
+
             if book == "draftkings":
 
                 result[
                     "DraftKings"
                 ] = float(
-                    match[
-                        "Line"
-                    ]
+                    line
                 )
+
+                result[
+                    "DraftKings Over Odds"
+                ] = over_odds
+
+                result[
+                    "DraftKings Under Odds"
+                ] = under_odds
 
             elif book == "fanduel":
 
                 result[
                     "FanDuel"
                 ] = float(
-                    match[
-                        "Line"
-                    ]
+                    line
                 )
+
+                result[
+                    "FanDuel Over Odds"
+                ] = over_odds
+
+                result[
+                    "FanDuel Under Odds"
+                ] = under_odds
 
             elif book == "prizepicks":
 
                 result[
                     "PrizePicks"
                 ] = float(
-                    match[
-                        "Line"
-                    ]
+                    line
                 )
+
+                result[
+                    "PrizePicks Over Odds"
+                ] = over_odds
+
+                result[
+                    "PrizePicks Under Odds"
+                ] = under_odds
 
             elif book == "betmgm":
 
                 result[
                     "BetMGM"
                 ] = float(
-                    match[
-                        "Line"
-                    ]
+                    line
                 )
 
+                result[
+                    "BetMGM Over Odds"
+                ] = over_odds
+
+                result[
+                    "BetMGM Under Odds"
+                ] = under_odds
+
         # ----------------------------------------------------
-        # CONSENSUS
+        # CONSENSUS LINE
         # ----------------------------------------------------
 
         values = [
@@ -1065,7 +1285,7 @@ def build_market_comparison(
         )
 
         # ----------------------------------------------------
-        # DIFFERENCE
+        # LINE DIFFERENCE
         # ----------------------------------------------------
 
         result[
@@ -1145,6 +1365,185 @@ def build_market_comparison(
             result[
                 "Pick"
             ] = "NEUTRAL"
+
+        # ----------------------------------------------------
+        # NO-VIG PROBABILITIES
+        # ----------------------------------------------------
+
+        book_no_vig = []
+
+        book_names = [
+            "DraftKings",
+            "FanDuel",
+            "PrizePicks",
+            "BetMGM",
+        ]
+
+        for book_name in book_names:
+
+            over_column = (
+                f"{book_name} Over Odds"
+            )
+
+            under_column = (
+                f"{book_name} Under Odds"
+            )
+
+            probability = (
+                selected_side_no_vig_probability(
+                    result[
+                        "Pick"
+                    ],
+                    result[
+                        over_column
+                    ],
+                    result[
+                        under_column
+                    ],
+                )
+            )
+
+            result[
+                f"{book_name} No-Vig %"
+            ] = (
+                probability * 100
+                if probability is not None
+                else None
+            )
+
+            if probability is not None:
+
+                book_no_vig.append(
+                    probability
+                )
+
+        # ----------------------------------------------------
+        # AVERAGE NO-VIG PROBABILITY
+        # ----------------------------------------------------
+
+        if book_no_vig:
+
+            average_no_vig = (
+                sum(
+                    book_no_vig
+                )
+                / len(
+                    book_no_vig
+                )
+            )
+
+            result[
+                "Average No-Vig %"
+            ] = (
+                average_no_vig
+                * 100
+            )
+
+            result[
+                "Average No-Vig Odds"
+            ] = (
+                probability_to_american_odds(
+                    average_no_vig
+                )
+            )
+
+            result[
+                "No-Vig Books"
+            ] = len(
+                book_no_vig
+            )
+
+        else:
+
+            result[
+                "Average No-Vig %"
+            ] = None
+
+            result[
+                "Average No-Vig Odds"
+            ] = None
+
+            result[
+                "No-Vig Books"
+            ] = 0
+
+        # ----------------------------------------------------
+        # BOOK CONFIRMATION
+        # ----------------------------------------------------
+
+        result[
+            "Book Confirmation %"
+        ] = (
+            (
+                result[
+                    "No-Vig Books"
+                ]
+                / len(
+                    COMPARISON_BOOKS
+                )
+            )
+            * 100
+        )
+
+        # ----------------------------------------------------
+        # FINAL SCORE
+        #
+        # We normalize the three components to a 0-100
+        # style score:
+        #
+        # 1. No-vig probability
+        # 2. Line edge
+        # 3. Book confirmation
+        #
+        # The no-vig probability is the dominant factor.
+        # ----------------------------------------------------
+
+        no_vig_component = (
+            result[
+                "Average No-Vig %"
+            ]
+            if pd.notna(
+                result[
+                    "Average No-Vig %"
+                ]
+            )
+            else 0
+        )
+
+        line_edge_component = min(
+            max(
+                result[
+                    "Line Diff %"
+                ],
+                0,
+            ),
+            100,
+        )
+
+        confirmation_component = (
+            result[
+                "Book Confirmation %"
+            ]
+        )
+
+        result[
+            "Final Score"
+        ] = (
+            (
+                no_vig_component
+                * NO_VIG_WEIGHT
+            )
+            +
+            (
+                line_edge_component
+                * LINE_EDGE_WEIGHT
+            )
+            +
+            (
+                confirmation_component
+                * BOOK_CONFIRMATION_WEIGHT
+            )
+        )
 
         results.append(
             result
@@ -1532,6 +1931,8 @@ if comparison_df.empty:
                 "Market Key",
                 "Book",
                 "Line",
+                "Over Odds",
+                "Under Odds",
                 "Home Team",
                 "Away Team",
                 "Game Time",
@@ -1578,12 +1979,17 @@ if comparison_df.empty:
 
 
 # ============================================================
-# RANK
+# RANKING
 # ============================================================
 
 comparison_df = (
     comparison_df.copy()
 )
+
+
+# ------------------------------------------------------------
+# ABSOLUTE LINE DIFFERENCE
+# ------------------------------------------------------------
 
 comparison_df[
     "Abs Difference"
@@ -1593,17 +1999,32 @@ comparison_df[
     ].abs()
 )
 
+
+# ------------------------------------------------------------
+# PRIMARY SORT
+#
+# FINAL SCORE is used for the overall Best Props ranking.
+#
+# Average No-Vig Probability remains the primary ordering
+# for the main chart.
+# ------------------------------------------------------------
+
 comparison_df = (
     comparison_df
     .sort_values(
         [
+            "Final Score",
+            "Average No-Vig %",
+            "Line Diff %",
             "Books",
-            "Abs Difference",
         ],
         ascending=[
             False,
             False,
+            False,
+            False,
         ],
+        na_position="last",
     )
     .reset_index(
         drop=True
@@ -1626,8 +2047,8 @@ st.header(
     "🔥 Best Props"
 )
 
-c1, c2, c3 = st.columns(
-    3
+c1, c2, c3, c4 = st.columns(
+    4
 )
 
 with c1:
@@ -1640,11 +2061,24 @@ with c1:
 with c2:
 
     st.metric(
+        "Top No-Vig Probability",
+        (
+            f"{comparison_df['Average No-Vig %'].max():.1f}%"
+            if comparison_df[
+                "Average No-Vig %"
+            ].notna().any()
+            else "N/A"
+        ),
+    )
+
+with c3:
+
+    st.metric(
         "Largest Line Difference",
         f"{comparison_df['Abs Difference'].max():.1f}",
     )
 
-with c3:
+with c4:
 
     normalized_books = (
         props_df[
@@ -1688,16 +2122,17 @@ display_columns = [
     "Player",
     "Prop",
     "Period",
+    "Pick",
     "Underdog",
-    "DraftKings",
-    "FanDuel",
-    "PrizePicks",
-    "BetMGM",
     "Market Consensus",
     "Difference",
     "Line Diff %",
-    "Pick",
+    "Average No-Vig %",
+    "Average No-Vig Odds",
+    "No-Vig Books",
     "Books",
+    "Book Confirmation %",
+    "Final Score",
 ]
 
 display_df = (
@@ -1713,10 +2148,6 @@ display_df = (
 
 for column in [
     "Underdog",
-    "DraftKings",
-    "FanDuel",
-    "PrizePicks",
-    "BetMGM",
     "Market Consensus",
     "Difference",
 ]:
@@ -1747,6 +2178,58 @@ display_df[
 )
 
 
+display_df[
+    "Average No-Vig %"
+] = (
+    pd.to_numeric(
+        display_df[
+            "Average No-Vig %"
+        ],
+        errors="coerce",
+    )
+    .round(2)
+)
+
+
+display_df[
+    "Average No-Vig Odds"
+] = (
+    pd.to_numeric(
+        display_df[
+            "Average No-Vig Odds"
+        ],
+        errors="coerce",
+    )
+    .round(0)
+)
+
+
+display_df[
+    "Book Confirmation %"
+] = (
+    pd.to_numeric(
+        display_df[
+            "Book Confirmation %"
+        ],
+        errors="coerce",
+    )
+    .round(1)
+)
+
+
+display_df[
+    "Final Score"
+] = (
+    pd.to_numeric(
+        display_df[
+            "Final Score"
+        ],
+        errors="coerce",
+    )
+    .round(2)
+)
+
+
 # ============================================================
 # DISPLAY
 # ============================================================
@@ -1759,34 +2242,61 @@ st.dataframe(
 
 
 # ============================================================
-# EXPLANATION
+# RANKING EXPLANATION
 # ============================================================
 
 st.subheader(
-    "📖 How PropEdge Compares Props"
+    "📐 How PropEdge Ranks Props"
 )
 
-if selected_sport == "MLB":
-
-    st.write(
-        "For MLB, PropEdge matches an Underdog prop "
-        "to the same player, MLB market, and game "
-        "across DraftKings, FanDuel, PrizePicks, "
-        "and BetMGM."
-    )
-
-else:
-
-    st.write(
-        "For NFL, PropEdge matches an Underdog prop "
-        "to the same player, market, period, and game "
-        "across DraftKings, FanDuel, PrizePicks, "
-        "and BetMGM."
-    )
+st.write(
+    "PropEdge calculates no-vig probability separately "
+    "for each sportsbook by removing the sportsbook's "
+    "vig from its Over/Under prices."
+)
 
 st.write(
-    "Only books that actually return a matching line "
-    "are included in the Market Consensus."
+    "The overall Final Score combines average no-vig "
+    "probability, line edge, and sportsbook confirmation. "
+    "No-vig probability receives the largest weight."
+)
+
+st.write(
+    "The main chart uses a different, intentional rule: "
+    "it is ordered strictly by the highest average no-vig "
+    "probability first. This keeps the chart's #1 prop "
+    "as the highest-probability market signal."
+)
+
+
+# ============================================================
+# SCORING WEIGHTS
+# ============================================================
+
+st.subheader(
+    "⚙️ Current Ranking Weights"
+)
+
+weight_df = pd.DataFrame({
+
+    "Factor": [
+        "Average No-Vig Probability",
+        "Line Edge",
+        "Book Confirmation",
+    ],
+
+    "Weight": [
+        f"{NO_VIG_WEIGHT * 100:.0f}%",
+        f"{LINE_EDGE_WEIGHT * 100:.0f}%",
+        f"{BOOK_CONFIRMATION_WEIGHT * 100:.0f}%",
+    ],
+
+})
+
+st.dataframe(
+    weight_df,
+    use_container_width=True,
+    hide_index=True,
 )
 
 
@@ -1803,15 +2313,28 @@ book_comparison_df = comparison_df[
         "Player",
         "Prop",
         "Period",
+        "Pick",
         "Underdog",
+
         "DraftKings",
+        "DraftKings No-Vig %",
+
         "FanDuel",
+        "FanDuel No-Vig %",
+
         "PrizePicks",
+        "PrizePicks No-Vig %",
+
         "BetMGM",
+        "BetMGM No-Vig %",
+
         "Market Consensus",
+        "Average No-Vig %",
+        "No-Vig Books",
         "Books",
     ]
 ].copy()
+
 
 for column in [
     "Underdog",
@@ -1834,6 +2357,28 @@ for column in [
         .round(1)
     )
 
+
+for column in [
+    "DraftKings No-Vig %",
+    "FanDuel No-Vig %",
+    "PrizePicks No-Vig %",
+    "BetMGM No-Vig %",
+    "Average No-Vig %",
+]:
+
+    book_comparison_df[
+        column
+    ] = (
+        pd.to_numeric(
+            book_comparison_df[
+                column
+            ],
+            errors="coerce",
+        )
+        .round(2)
+    )
+
+
 st.dataframe(
     book_comparison_df,
     use_container_width=True,
@@ -1849,11 +2394,39 @@ st.header(
     "📊 Top Market Discrepancies"
 )
 
+
+# ------------------------------------------------------------
+# IMPORTANT:
+#
+# The chart is intentionally sorted by:
+#
+# 1. Highest Average No-Vig Probability
+# 2. Highest Line Diff %
+# 3. Most confirming books
+#
+# This fixes the previous problem where the chart was
+# inheriting the old line-difference ranking.
+# ------------------------------------------------------------
+
 chart_df = (
     comparison_df
+    .sort_values(
+        [
+            "Average No-Vig %",
+            "Line Diff %",
+            "No-Vig Books",
+        ],
+        ascending=[
+            False,
+            False,
+            False,
+        ],
+        na_position="last",
+    )
     .head(10)
     .copy()
 )
+
 
 chart_df[
     "Label"
@@ -1871,16 +2444,100 @@ chart_df[
     ].astype(str)
 )
 
+
 chart_df = (
-    chart_df.set_index(
+    chart_df
+    .set_index(
         "Label"
     )
 )
 
+
 st.bar_chart(
     chart_df[
-        "Line Diff %"
+        "Average No-Vig %"
     ]
+)
+
+
+# ============================================================
+# NO-VIG DETAIL
+# ============================================================
+
+st.subheader(
+    "🎯 No-Vig Probability Board"
+)
+
+novig_columns = [
+    "Player",
+    "Prop",
+    "Pick",
+    "Average No-Vig %",
+    "Average No-Vig Odds",
+    "No-Vig Books",
+    "Books",
+    "Line Diff %",
+    "Final Score",
+]
+
+novig_df = (
+    comparison_df[
+        novig_columns
+    ]
+    .sort_values(
+        [
+            "Average No-Vig %",
+            "No-Vig Books",
+            "Line Diff %",
+        ],
+        ascending=[
+            False,
+            False,
+            False,
+        ],
+        na_position="last",
+    )
+    .head(25)
+    .copy()
+)
+
+
+for column in [
+    "Average No-Vig %",
+    "Line Diff %",
+    "Final Score",
+]:
+
+    novig_df[
+        column
+    ] = (
+        pd.to_numeric(
+            novig_df[
+                column
+            ],
+            errors="coerce",
+        )
+        .round(2)
+    )
+
+
+novig_df[
+    "Average No-Vig Odds"
+] = (
+    pd.to_numeric(
+        novig_df[
+            "Average No-Vig Odds"
+        ],
+        errors="coerce",
+    )
+    .round(0)
+)
+
+
+st.dataframe(
+    novig_df,
+    use_container_width=True,
+    hide_index=True,
 )
 
 
@@ -1895,7 +2552,7 @@ with st.expander(
     st.write(
         "This shows the normalized records returned "
         "by ParlayAPI before PropEdge performs its "
-        "matching logic."
+        "matching and ranking logic."
     )
 
     if not props_df.empty:
